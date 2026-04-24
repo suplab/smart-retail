@@ -1,6 +1,6 @@
 # SmartRetail — Demand Forecasting & Supply Chain Platform
 
-> **Author:** Suplab Debnath — Solutions Architect → Enterprise Architect (Transitioning), Cognizant
+> **Author:** Suplab Debnath — Solutions Architect
 > **Version:** 1.0 | April 2026 | **Classification:** Internal — Confidential
 
 ---
