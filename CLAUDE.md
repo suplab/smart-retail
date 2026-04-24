@@ -1,7 +1,7 @@
 # CLAUDE.md — SmartRetail Demand Forecasting & Supply Chain Platform
 > **Project Context File for AI Code Companion Tools**
 >
-> Author: Suplab Debnath — Solutions Architect → Enterprise Architect (Transitioning), Cognizant
+> Author: Suplab Debnath — Solutions Architect → Enterprise Architect (Transitioning)
 > Version: 1.0 | April 2026 | Classification: Internal — Confidential
 > Companion Docs: `SmartRetail_PreWork_Assessment_v3.docx` · `SmartRetail_HLD_v2_revised.docx` · `SmartRetail_LLD_v3.docx` · `SmartRetail_APISpec_v2.docx`
 
