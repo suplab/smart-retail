@@ -1,0 +1,21 @@
+version: 0.2
+# CodeBuild buildspec: CDK deploy to target environment.
+# DEPLOY_ENV must be set as a CodeBuild environment variable.
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - cd infra/cdk && npm ci
+      - npm install -g aws-cdk
+  build:
+    commands:
+      - cd infra/cdk
+      - echo "Deploying to env=$DEPLOY_ENV"
+      - npx cdk deploy --all --context env=$DEPLOY_ENV --require-approval never
+  post_build:
+    commands:
+      - echo "CDK deploy complete — $(date)"
+cache:
+  paths:
+    - 'infra/cdk/node_modules/**/*'

@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: re
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+re:
+  sqs:
+    alert-queue-url: ${SQS_ALERT_QUEUE_URL}
+    confirmation-queue-url: ${SQS_CONFIRMATION_QUEUE_URL}
+  dynamodb:
+    purchase-orders-table-name: ${DYNAMODB_PURCHASE_ORDERS_TABLE:purchase-orders}
+  eventbridge:
+    bus-name: ${EVENTBRIDGE_BUS_NAME:smartretail-events}
+  step-functions:
+    state-machine-arn: ${STEP_FUNCTIONS_STATE_MACHINE_ARN}
+  # OQ-02: Auto-approval threshold — awaiting business confirmation. Placeholder: 10000
+  auto-approval-threshold: ${RE_AUTO_APPROVAL_THRESHOLD:10000}
+
+aws:
+  region: ${AWS_REGION:us-east-1}
+  endpoint-url: ${AWS_ENDPOINT_URL:#{null}}

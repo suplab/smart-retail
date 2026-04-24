@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: dfs
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+dfs:
+  sqs:
+    sales-events-queue-url: ${SQS_SALES_EVENTS_QUEUE_URL}
+    adjustment-queue-url: ${SQS_ADJUSTMENT_QUEUE_URL}
+  dynamodb:
+    forecasts-table-name: ${DYNAMODB_FORECASTS_TABLE:forecasts}
+  eventbridge:
+    bus-name: ${EVENTBRIDGE_BUS_NAME:smartretail-events}
+  s3:
+    ml-artifacts-bucket: ${S3_ML_ARTIFACTS_BUCKET}
+  sagemaker:
+    # OQ-03, OQ-04: Training job hyperparameters — awaiting stakeholder confirmation
+    training-image-uri: ${SAGEMAKER_DEEPAR_IMAGE_URI}
+    instance-type: ${SAGEMAKER_INSTANCE_TYPE:ml.m5.xlarge}
+    forecast-horizon: ${SAGEMAKER_FORECAST_HORIZON:30}
+    prediction-length: ${SAGEMAKER_PREDICTION_LENGTH:30}
+  parameter-store:
+    active-model-path-key: /smartretail/ml/active-model-path
+
+aws:
+  region: ${AWS_REGION:us-east-1}
+  endpoint-url: ${AWS_ENDPOINT_URL:#{null}}

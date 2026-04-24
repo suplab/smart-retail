@@ -1,0 +1,189 @@
+version: "3.9"
+
+# SmartRetail local development stack.
+# Runs all five ECS services, LocalStack (AWS mock), and supporting tooling.
+# Start: docker compose up -d
+# Stop:  docker compose down
+
+x-common-env: &common-env
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_ENDPOINT_URL: http://localstack:4566
+  SPRING_PROFILES_ACTIVE: dev
+
+x-healthcheck-defaults: &hc
+  interval: 10s
+  timeout: 5s
+  retries: 10
+  start_period: 30s
+
+services:
+
+  # ─── AWS Mocking ────────────────────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: smartretail-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: dynamodb,kinesis,sqs,sns,s3,events,lambda,ssm,secretsmanager,cognito-idp,kms
+      DEBUG: 0
+      DATA_DIR: /var/lib/localstack/data
+      PERSISTENCE: 1
+      KINESIS_PROVIDER: kinesalite
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./scripts/localstack-init:/etc/localstack/init/ready.d
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      <<: *hc
+
+  # ─── Sales Ingestion Service ─────────────────────────────────────────────────
+  sis:
+    build:
+      context: ./backend/sis
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-sis
+    ports:
+      - "8081:8080"
+      - "5005:5005"
+    environment:
+      <<: *common-env
+      KINESIS_STREAM_NAME: smartretail-pos-stream
+      DYNAMODB_SALES_TABLE: sales-events
+      DYNAMODB_IDEMPOTENCY_TABLE: idempotency-keys
+      EVENTBRIDGE_BUS_NAME: smartretail-events
+      S3_RAW_EVENTS_BUCKET: smartretail-raw-events-dev
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      <<: *hc
+
+  # ─── Inventory Management Service ───────────────────────────────────────────
+  ims:
+    build:
+      context: ./backend/ims
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-ims
+    ports:
+      - "8082:8080"
+      - "5006:5005"
+    environment:
+      <<: *common-env
+      SQS_SALES_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/ims-sales-events-queue
+      SQS_FORECAST_QUEUE_URL: http://localstack:4566/000000000000/ims-forecast-updated-queue
+      SQS_SHIPMENT_QUEUE_URL: http://localstack:4566/000000000000/ims-shipment-queue
+      DYNAMODB_INVENTORY_TABLE: inventory-positions
+      EVENTBRIDGE_BUS_NAME: smartretail-events
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      <<: *hc
+
+  # ─── Demand Forecasting Service ─────────────────────────────────────────────
+  dfs:
+    build:
+      context: ./backend/dfs
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-dfs
+    ports:
+      - "8083:8080"
+      - "5007:5005"
+    environment:
+      <<: *common-env
+      SQS_SALES_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/dfs-sales-events-queue
+      SQS_ADJUSTMENT_QUEUE_URL: http://localstack:4566/000000000000/dfs-adjustment-queue
+      DYNAMODB_FORECASTS_TABLE: forecasts
+      EVENTBRIDGE_BUS_NAME: smartretail-events
+      S3_ML_ARTIFACTS_BUCKET: smartretail-ml-artifacts-dev
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      <<: *hc
+
+  # ─── Replenishment Engine ────────────────────────────────────────────────────
+  re:
+    build:
+      context: ./backend/re
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-re
+    ports:
+      - "8084:8080"
+      - "5008:5005"
+    environment:
+      <<: *common-env
+      SQS_ALERT_QUEUE_URL: http://localstack:4566/000000000000/re-alert-queue.fifo
+      SQS_CONFIRMATION_QUEUE_URL: http://localstack:4566/000000000000/re-confirmation-queue.fifo
+      DYNAMODB_PURCHASE_ORDERS_TABLE: purchase-orders
+      EVENTBRIDGE_BUS_NAME: smartretail-events
+      STEP_FUNCTIONS_STATE_MACHINE_ARN: arn:aws:states:us-east-1:000000000000:stateMachine:smartretail-replenishment-saga
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      <<: *hc
+
+  # ─── Supplier Integration Service ───────────────────────────────────────────
+  sup:
+    build:
+      context: ./backend/sup
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-sup
+    ports:
+      - "8085:8080"
+      - "5009:5005"
+    environment:
+      <<: *common-env
+      SQS_PO_DISPATCHED_QUEUE_URL: http://localstack:4566/000000000000/sup-po-dispatched-queue
+      DYNAMODB_SUPPLIER_POS_TABLE: supplier-pos
+      EVENTBRIDGE_BUS_NAME: smartretail-events
+      KMS_PII_KEY_ID: alias/smartretail-pii-dev
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      <<: *hc
+
+  # ─── React SPA (dev server) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: smartretail-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      VITE_API_BASE_URL: http://localhost:4566/restapis
+      VITE_COGNITO_USER_POOL_ID: us-east-1_localdev
+      VITE_COGNITO_CLIENT_ID: localdevclientid
+      VITE_COGNITO_REGION: us-east-1
+    depends_on:
+      - localstack
+
+volumes:
+  localstack-data:
+    driver: local

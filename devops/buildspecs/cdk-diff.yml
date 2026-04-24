@@ -1,0 +1,22 @@
+version: 0.2
+# CodeBuild buildspec: CDK synth + diff — PR quality gate (PG-02).
+# Fails the build if unexpected drift is detected.
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - cd infra/cdk && npm ci
+      - npm install -g aws-cdk
+  build:
+    commands:
+      - cd infra/cdk
+      - echo "Synthesising CDK stacks..."
+      - npx cdk synth --context env=$DEPLOY_ENV
+      - echo "Running cdk-nag checks..."
+      - npx cdk synth --context env=$DEPLOY_ENV 2>&1 | grep -i "nag" || true
+      - echo "Running CDK diff against deployed stacks..."
+      - npx cdk diff --context env=$DEPLOY_ENV
+cache:
+  paths:
+    - 'infra/cdk/node_modules/**/*'

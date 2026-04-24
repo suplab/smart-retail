@@ -1,0 +1,37 @@
+version: 0.2
+# CodeBuild buildspec: compile all Maven modules, run unit tests, generate coverage report.
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+  pre_build:
+    commands:
+      - echo "Starting backend build — $(date)"
+      - mvn --version
+  build:
+    commands:
+      - mvn clean verify -Dgroups=unit -T 4
+  post_build:
+    commands:
+      - echo "Backend build complete — $(date)"
+      - |
+        if [ $CODEBUILD_BUILD_SUCCEEDING -eq 0 ]; then
+          echo "BUILD FAILED"
+          exit 1
+        fi
+artifacts:
+  files:
+    - backend/*/target/*.jar
+  discard-paths: no
+reports:
+  unit-test-report:
+    files:
+      - '**/*-reports/*.xml'
+    file-format: JUNITXML
+  coverage-report:
+    files:
+      - '**/jacoco.xml'
+    file-format: JACOCOXML
+cache:
+  paths:
+    - '/root/.m2/**/*'
