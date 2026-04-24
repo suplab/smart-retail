@@ -1,0 +1,28 @@
+spring:
+  profiles:
+    active: dev
+
+aws:
+  endpoint-url: http://localhost:4566
+
+sis:
+  kinesis:
+    stream-name: smartretail-pos-stream
+    poll-interval-ms: 500
+  dynamodb:
+    sales-table-name: sales-events
+    idempotency-table-name: idempotency-keys
+  eventbridge:
+    bus-name: smartretail-events
+  s3:
+    raw-events-bucket: smartretail-raw-events-dev
+
+management:
+  metrics:
+    export:
+      cloudwatch:
+        enabled: false
+
+logging:
+  level:
+    com.smartretail: DEBUG

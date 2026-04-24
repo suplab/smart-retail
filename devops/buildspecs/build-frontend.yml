@@ -1,0 +1,37 @@
+version: 0.2
+# CodeBuild buildspec: lint, type-check, test, build React SPA.
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - cd frontend && npm ci
+  pre_build:
+    commands:
+      - cd frontend
+      - echo "Running ESLint..."
+      - npm run lint
+      - echo "Running TypeScript type-check..."
+      - npm run type-check
+  build:
+    commands:
+      - cd frontend
+      - echo "Running Vitest..."
+      - npm run test:coverage
+      - echo "Building production bundle..."
+      - npm run build
+  post_build:
+    commands:
+      - echo "Frontend build complete — $(date)"
+artifacts:
+  files:
+    - frontend/dist/**/*
+  discard-paths: no
+reports:
+  frontend-test-report:
+    files:
+      - 'frontend/coverage/junit.xml'
+    file-format: JUNITXML
+cache:
+  paths:
+    - 'frontend/node_modules/**/*'

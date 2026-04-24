@@ -1,0 +1,513 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail CI/CD Pipeline Stack — S3 artifact bucket, CodeBuild projects
+  for backend (Maven), frontend (npm/Vite), CDK diff/deploy, and Docker image
+  builds; CodePipeline orchestrating Source → Build → Test → Deploy-Dev →
+  Integration → Manual Approval → Deploy-Prod. Per CLAUDE.md §6.7.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  GitHubOwner:
+    Type: String
+    Description: GitHub organisation or user name
+  GitHubRepo:
+    Type: String
+    Default: smart-retail
+  GitHubBranch:
+    Type: String
+    Default: main
+  GitHubConnectionArn:
+    Type: String
+    Description: >
+      ARN of an AWS CodeStar Connection to GitHub (created once per account
+      via the console; must be in AVAILABLE status before running this stack).
+
+Resources:
+
+  # ── S3 Artifact Bucket ────────────────────────────────────────────────────
+  # Lifecycle: transition to STANDARD_IA after 30 days — pipeline artifacts are transient
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub smartretail-pipeline-artifacts-${Environment}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldArtifacts
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── IAM Roles ─────────────────────────────────────────────────────────────
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-codebuild-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: "*"
+              # CDK deploy permissions
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - iam:PassRole
+                  - iam:GetRole
+                  - iam:CreateRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:DeleteRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/*
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-codepipeline-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !ImportValue
+                  Fn::Sub: SmartRetail-${Environment}-AlarmTopicArn
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── CodeBuild Projects ────────────────────────────────────────────────────
+
+  # Backend — Maven build, unit tests, ArchUnit, JaCoCo coverage
+  BackendBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-backend-build-${Environment}
+      Description: "Maven build: unit tests, ArchUnit, JaCoCo ≥80% domain coverage"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+      Cache:
+        Type: S3
+        Location: !Sub ${ArtifactBucket}/maven-cache
+      BuildSpec: devops/buildspecs/build-backend.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-backend-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # Frontend — ESLint, type-check, Vitest coverage, Vite build
+  FrontendBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-frontend-build-${Environment}
+      Description: "npm build: ESLint, TypeScript, Vitest ≥70% component coverage, Vite bundle"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+      Cache:
+        Type: S3
+        Location: !Sub ${ArtifactBucket}/npm-cache
+      BuildSpec: devops/buildspecs/build-frontend.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-frontend-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # CDK diff — PR quality gate; fails pipeline if unexpected drift detected (PG-02)
+  CdkDiffProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-cdk-diff-${Environment}
+      Description: "CDK synth + cdk-nag + cdk diff; fails if unexpected resource changes detected"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: CDK_ENVIRONMENT
+            Value: !Ref Environment
+      BuildSpec: devops/buildspecs/cdk-diff.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-cdk-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # CDK deploy — applies CloudFormation changes to the target environment
+  CdkDeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-cdk-deploy-${Environment}
+      Description: "CDK deploy --all to target environment"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: CDK_ENVIRONMENT
+            Value: !Ref Environment
+      BuildSpec: devops/buildspecs/cdk-deploy.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-cdk-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # Docker image build + ECR push for all five ECS services
+  DockerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-docker-build-${Environment}
+      Description: "Build Docker images for SIS, IMS, DFS, RE, SUP; push to ECR"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true  # required for docker daemon
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+      BuildSpec: devops/buildspecs/build-docker.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-docker-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # Integration tests — LocalStack + Testcontainers golden thread validation
+  IntegrationTestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub smartretail-integration-test-${Environment}
+      Description: "Spring Boot Test + Testcontainers golden thread integration tests"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true  # required for Testcontainers/DinD
+        EnvironmentVariables:
+          - Name: SPRING_PROFILES_ACTIVE
+            Value: integration-test
+      BuildSpec: devops/buildspecs/integration-test.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/smartretail-integration-${Environment}
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── CodePipeline ──────────────────────────────────────────────────────────
+  SmartRetailPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub smartretail-pipeline-${Environment}
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+
+        # Stage 1: Source — GitHub via CodeStar Connection
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Sub ${GitHubOwner}/${GitHubRepo}
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODE_ZIP
+                DetectChanges: true
+              OutputArtifacts:
+                - Name: SourceArtifact
+
+        # Stage 2: Build — backend, frontend, CDK diff in parallel
+        - Name: Build
+          Actions:
+            - Name: BuildBackend
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref BackendBuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BackendArtifact
+              RunOrder: 1
+            - Name: BuildFrontend
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref FrontendBuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: FrontendArtifact
+              RunOrder: 1
+            - Name: CdkDiff
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CdkDiffProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+        # Stage 3: Docker — build and push images to ECR
+        - Name: PackageImages
+          Actions:
+            - Name: BuildDockerImages
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DockerBuildProject
+              InputArtifacts:
+                - Name: BackendArtifact
+              OutputArtifacts:
+                - Name: ImageDefinitions
+              RunOrder: 1
+
+        # Stage 4: Deploy to Dev
+        - Name: DeployDev
+          Actions:
+            - Name: CdkDeployDev
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CdkDeployProject
+                EnvironmentVariables: !Sub >
+                  [{"name":"CDK_ENVIRONMENT","value":"dev","type":"PLAINTEXT"}]
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+        # Stage 5: Integration Tests against Dev
+        - Name: IntegrationTests
+          Actions:
+            - Name: RunIntegrationTests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref IntegrationTestProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+        # Stage 6: Manual Approval Gate — required before production (PG-03)
+        - Name: ManualApproval
+          Actions:
+            - Name: ApproveForProduction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                NotificationArn: !ImportValue
+                  Fn::Sub: SmartRetail-${Environment}-AlarmTopicArn
+                CustomData: "Review integration test results before approving production deployment."
+              RunOrder: 1
+
+        # Stage 7: Deploy to Production (blue-green via CodeDeploy for ECS is configured per-service)
+        - Name: DeployProd
+          Actions:
+            - Name: CdkDeployProd
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CdkDeployProject
+                EnvironmentVariables: >
+                  [{"name":"CDK_ENVIRONMENT","value":"prod","type":"PLAINTEXT"}]
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Docker Build Buildspec (inline reference file) ────────────────────────
+  # The actual buildspec is at devops/buildspecs/build-docker.yml
+  # Integration test buildspec is at devops/buildspecs/integration-test.yml
+
+Outputs:
+  PipelineName:
+    Value: !Ref SmartRetailPipeline
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PipelineName
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ArtifactBucketName
+  CodeBuildRoleArn:
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-CodeBuildRoleArn

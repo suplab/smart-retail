@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: sup
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+sup:
+  sqs:
+    po-dispatched-queue-url: ${SQS_PO_DISPATCHED_QUEUE_URL}
+  dynamodb:
+    supplier-pos-table-name: ${DYNAMODB_SUPPLIER_POS_TABLE:supplier-pos}
+  eventbridge:
+    bus-name: ${EVENTBRIDGE_BUS_NAME:smartretail-events}
+  kms:
+    # PII encryption key for supplier email and phone (CLAUDE.md §1.3 / §5.4)
+    pii-key-id: ${KMS_PII_KEY_ID:alias/smartretail-pii-dev}
+
+aws:
+  region: ${AWS_REGION:us-east-1}
+  endpoint-url: ${AWS_ENDPOINT_URL:#{null}}

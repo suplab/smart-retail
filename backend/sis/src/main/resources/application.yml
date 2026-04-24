@@ -1,0 +1,78 @@
+spring:
+  application:
+    name: sis
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      cloudwatch:
+        enabled: false   # enabled in prod via environment override
+
+# SIS-specific configuration — all values overridable via environment variables
+sis:
+  kinesis:
+    stream-name: ${KINESIS_STREAM_NAME:smartretail-pos-stream}
+    poll-interval-ms: ${KINESIS_POLL_INTERVAL_MS:1000}
+  dynamodb:
+    sales-table-name: ${DYNAMODB_SALES_TABLE:sales-events}
+    idempotency-table-name: ${DYNAMODB_IDEMPOTENCY_TABLE:idempotency-keys}
+  eventbridge:
+    bus-name: ${EVENTBRIDGE_BUS_NAME:smartretail-events}
+  s3:
+    raw-events-bucket: ${S3_RAW_EVENTS_BUCKET:smartretail-raw-events-dev}
+
+aws:
+  region: ${AWS_REGION:us-east-1}
+  endpoint-url: ${AWS_ENDPOINT_URL:#{null}}
+
+# Resilience4j defaults — overridden per CLAUDE.md §5.3
+resilience4j:
+  circuitbreaker:
+    instances:
+      dynamoDb:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        sliding-window-size: 10
+        permitted-number-of-calls-in-half-open-state: 3
+      eventBridge:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        sliding-window-size: 10
+      kinesisConsumer:
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 60s
+        sliding-window-size: 5
+      s3:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        sliding-window-size: 10
+  retry:
+    instances:
+      dynamoDb:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      eventBridge:
+        max-attempts: 3
+        wait-duration: 300ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+
+logging:
+  pattern:
+    console: "%msg%n"

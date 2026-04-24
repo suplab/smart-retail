@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail Auth Stack — two Cognito User Pools (Internal + Supplier) with
+  groups, app clients, and domain. JWT validation occurs at API Gateway —
+  ECS services receive pre-validated claims in headers (CLAUDE.md §5.4).
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  # Domain prefix must be globally unique — parameterised to avoid naming collisions
+  CognitoDomainPrefix:
+    Type: String
+    Default: smartretail
+    Description: Unique prefix for Cognito hosted UI domains
+
+Resources:
+
+  # ── Internal User Pool ────────────────────────────────────────────────────
+  # Users: Supply Chain Planners, Inventory Managers, Buyers (CLAUDE.md §1.4)
+  InternalUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub smartretail-internal-${Environment}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      PasswordPolicy:
+        MinimumLength: 12
+        RequireUppercase: true
+        RequireLowercase: true
+        RequireNumbers: true
+        RequireSymbols: true
+        TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+        - Name: given_name
+          Required: true
+          Mutable: true
+        - Name: family_name
+          Required: true
+          Mutable: true
+        - Name: custom:role
+          AttributeDataType: String
+          Mutable: true
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UserPoolTags:
+        Project: SmartRetail
+        Environment: !Ref Environment
+
+  InternalUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${CognitoDomainPrefix}-internal-${Environment}
+      UserPoolId: !Ref InternalUserPool
+
+  InternalUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub smartretail-internal-client-${Environment}
+      UserPoolId: !Ref InternalUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders: [COGNITO]
+
+  # Groups for RBAC — OQ-06: additional groups to be confirmed by business
+  GroupSupplyChainPlanner:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: SupplyChainPlanner
+      Description: "Can view forecasts, approve POs above auto-approval threshold, manage exceptions"
+      UserPoolId: !Ref InternalUserPool
+      Precedence: 10
+
+  GroupInventoryManager:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: InventoryManager
+      Description: "Monitors real-time stock positions, low-stock alerts, safety stock levels"
+      UserPoolId: !Ref InternalUserPool
+      Precedence: 20
+
+  GroupBuyer:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Buyer
+      Description: "Reviews demand signals and overstock alerts, initiates manual replenishment"
+      UserPoolId: !Ref InternalUserPool
+      Precedence: 30
+
+  # ── Supplier User Pool ────────────────────────────────────────────────────
+  # Users: Supplier Portal users — view POs, acknowledge, update shipment status
+  SupplierUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub smartretail-supplier-${Environment}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      PasswordPolicy:
+        MinimumLength: 12
+        RequireUppercase: true
+        RequireLowercase: true
+        RequireNumbers: true
+        RequireSymbols: true
+        TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+        - Name: given_name
+          Required: true
+          Mutable: true
+        - Name: family_name
+          Required: true
+          Mutable: true
+        # supplierId attribute links portal user to supplier record in DynamoDB
+        - Name: custom:supplierId
+          AttributeDataType: String
+          Mutable: true
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UserPoolTags:
+        Project: SmartRetail
+        Environment: !Ref Environment
+
+  SupplierUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${CognitoDomainPrefix}-supplier-${Environment}
+      UserPoolId: !Ref SupplierUserPool
+
+  SupplierUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub smartretail-supplier-client-${Environment}
+      UserPoolId: !Ref SupplierUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders: [COGNITO]
+
+  GroupSupplierUser:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: SupplierUser
+      Description: "External supplier portal users — scoped to their own POs"
+      UserPoolId: !Ref SupplierUserPool
+      Precedence: 10
+
+Outputs:
+  InternalUserPoolId:
+    Value: !Ref InternalUserPool
+    Export:
+      Name: !Sub SmartRetail-${Environment}-InternalUserPoolId
+  InternalUserPoolArn:
+    Value: !GetAtt InternalUserPool.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-InternalUserPoolArn
+  InternalUserPoolClientId:
+    Value: !Ref InternalUserPoolClient
+    Export:
+      Name: !Sub SmartRetail-${Environment}-InternalUserPoolClientId
+  InternalUserPoolDomain:
+    Value: !Sub ${CognitoDomainPrefix}-internal-${Environment}
+    Export:
+      Name: !Sub SmartRetail-${Environment}-InternalUserPoolDomain
+  SupplierUserPoolId:
+    Value: !Ref SupplierUserPool
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupplierUserPoolId
+  SupplierUserPoolArn:
+    Value: !GetAtt SupplierUserPool.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupplierUserPoolArn
+  SupplierUserPoolClientId:
+    Value: !Ref SupplierUserPoolClient
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupplierUserPoolClientId
+  SupplierUserPoolDomain:
+    Value: !Sub ${CognitoDomainPrefix}-supplier-${Environment}
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupplierUserPoolDomain

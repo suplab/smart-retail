@@ -1,0 +1,44 @@
+version: 0.2
+# Integration tests — Spring Boot Test + Testcontainers (LocalStack + DynamoDB Local).
+# PrivilegedMode must be true for Testcontainers Docker-in-Docker.
+# Runs the golden thread: SIS ingest → EventBridge → IMS update → ARS read.
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+    commands:
+      - echo "Starting Docker daemon for Testcontainers..."
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock &
+      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
+
+  pre_build:
+    commands:
+      - echo "Pulling LocalStack image for Testcontainers..."
+      - docker pull localstack/localstack:3.4
+      - docker pull amazon/dynamodb-local:2.4.0
+
+  build:
+    commands:
+      - echo "Running integration tests (golden thread + DLQ routing)..."
+      - mvn -pl backend/common,backend/sis,backend/ims verify
+          -Dgroups=integration
+          -Dspring.profiles.active=integration-test
+          -T 1
+          --no-transfer-progress
+
+  post_build:
+    commands:
+      - echo "Integration test phase complete."
+
+reports:
+  IntegrationTestResults:
+    files:
+      - "backend/sis/target/surefire-reports/*.xml"
+      - "backend/ims/target/surefire-reports/*.xml"
+    file-format: JUNITXML
+
+artifacts:
+  files:
+    - backend/sis/target/surefire-reports/**/*
+    - backend/ims/target/surefire-reports/**/*
