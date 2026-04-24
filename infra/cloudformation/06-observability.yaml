@@ -1,0 +1,323 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail Observability Stack — CloudWatch DLQ depth alarms (mandatory per
+  CLAUDE.md CG-09), SNS alarm topic for L1/L2 notifications, CloudTrail for
+  SOC2 audit trail. Imports DLQ ARNs from MessagingStack.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  AlarmEmail:
+    Type: String
+    Description: Email address for CloudWatch alarm notifications
+    Default: suplab.debnath@cognizant.com
+
+Resources:
+
+  # ── SNS Alarm Topic ───────────────────────────────────────────────────────
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub smartretail-alarms-${Environment}
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmEmail
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── DLQ Depth Alarms — CG-09: mandatory on every DLQ ────────────────────
+  # Threshold: ≥1 message triggers alarm (any DLQ depth indicates processing failure)
+
+  ImsSalesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ImsSalesDlq-Depth
+      AlarmDescription: "IMS sales-events DLQ has messages — SIS→IMS processing failures"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: ims-sales-events-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  DfsSalesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-DfsSalesDlq-Depth
+      AlarmDescription: "DFS sales-events DLQ has messages — SIS→DFS processing failures"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: dfs-sales-events-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ArsSalesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ArsSalesDlq-Depth
+      AlarmDescription: "ARS sales-events DLQ has messages"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: ars-sales-events-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ImsForecastDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ImsForecastDlq-Depth
+      AlarmDescription: "IMS forecast-updated DLQ has messages"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: ims-forecast-updated-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ReAlertDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ReAlertDlq-Depth
+      AlarmDescription: "RE alert FIFO DLQ has messages — replenishment saga blocked"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: re-alert-dlq.fifo
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ReConfirmationDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ReConfirmationDlq-Depth
+      AlarmDescription: "RE order-confirmation FIFO DLQ has messages — saga completion blocked"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: re-confirmation-dlq.fifo
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  SupPoDispatchedDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-SupPoDispatchedDlq-Depth
+      AlarmDescription: "SUP PO-dispatched DLQ has messages — supplier notification failures"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: sup-po-dispatched-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ImsShipmentDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ImsShipmentDlq-Depth
+      AlarmDescription: "IMS shipment DLQ has messages — inventory shipment updates failing"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: ims-shipment-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  DfsAdjustmentDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-DfsAdjustmentDlq-Depth
+      AlarmDescription: "DFS forecast-adjustment DLQ has messages — PPS→DFS adjustments failing"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: dfs-adjustment-dlq
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # ── Service-Level Alarms ──────────────────────────────────────────────────
+  # ARS Lambda error rate (p99 ≤ 500ms per NFR)
+  ArsLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ARS-Lambda-Errors
+      AlarmDescription: "ARS Lambda error rate exceeded — dashboard availability at risk"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub smartretail-ars-${Environment}
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  ArsLambdaP99Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub SmartRetail-${Environment}-ARS-Lambda-P99-Duration
+      AlarmDescription: "ARS Lambda p99 duration exceeding 500ms NFR threshold"
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub smartretail-ars-${Environment}
+      ExtendedStatistic: p99
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # ── CloudTrail — SOC2 audit trail ────────────────────────────────────────
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub smartretail-cloudtrail-${Environment}-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: RetainFor7Years
+            Status: Enabled
+            ExpirationInDays: 2555  # 7 years for SOC2 compliance
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  SmartRetailTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: !Sub smartretail-trail-${Environment}
+      S3BucketName: !Ref CloudTrailBucket
+      IsLogging: true
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: false
+      EnableLogFileValidation: true
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub SmartRetail-${Environment}-AlarmTopicArn
+  CloudTrailBucketName:
+    Value: !Ref CloudTrailBucket
+    Export:
+      Name: !Sub SmartRetail-${Environment}-CloudTrailBucketName

@@ -1,0 +1,347 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail Data Stack — all 7 DynamoDB tables with exact GSIs from CLAUDE.md §3.3.
+  DynamoDB on-demand mode. PITR enabled (RPO ≤ 15 min). KMS key for PII encryption.
+  Table names are fixed — do not rename (all service code references them by these names).
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+
+  # KMS key for supplier PII (email/phone) — encrypted before DynamoDB write (CLAUDE.md §5.4)
+  PiiEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: SmartRetail PII encryption key for supplier contact data
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  PiiKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/smartretail-pii-${Environment}
+      TargetKeyId: !Ref PiiEncryptionKey
+
+  # ── sales-events ─────────────────────────────────────────────────────────────
+  # PK=transactionId, GSI-SKU-DC-Date: PK=skuId, SK=skuDcDate
+  SalesEventsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: sales-events
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: transactionId
+          AttributeType: S
+        - AttributeName: skuId
+          AttributeType: S
+        - AttributeName: skuDcDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transactionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: GSI-SKU-DC-Date
+          KeySchema:
+            - AttributeName: skuId
+              KeyType: HASH
+            - AttributeName: skuDcDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: sis
+
+  # ── idempotency-keys ─────────────────────────────────────────────────────────
+  # PK=eventId, TTL=ttlEpochSeconds (48h auto-expiry)
+  IdempotencyKeysTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: idempotency-keys
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: ttlEpochSeconds
+        Enabled: true
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: sis
+
+  # ── inventory-positions ───────────────────────────────────────────────────────
+  # PK=skuId, SK=dcId, GSI-DC-Alerts: PK=dcId, SK=alertStatus
+  InventoryPositionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: inventory-positions
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: skuId
+          AttributeType: S
+        - AttributeName: dcId
+          AttributeType: S
+        - AttributeName: alertStatus
+          AttributeType: S
+      KeySchema:
+        - AttributeName: skuId
+          KeyType: HASH
+        - AttributeName: dcId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI-DC-Alerts
+          KeySchema:
+            - AttributeName: dcId
+              KeyType: HASH
+            - AttributeName: alertStatus
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: ims
+
+  # ── forecasts ─────────────────────────────────────────────────────────────────
+  # PK=skuId, SK=dcForecastDate (dcId#forecastDate), GSI-DC-ForecastDate
+  ForecastsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: forecasts
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: skuId
+          AttributeType: S
+        - AttributeName: dcForecastDate
+          AttributeType: S
+        - AttributeName: dcId
+          AttributeType: S
+        - AttributeName: forecastDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: skuId
+          KeyType: HASH
+        - AttributeName: dcForecastDate
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI-DC-ForecastDate
+          KeySchema:
+            - AttributeName: dcId
+              KeyType: HASH
+            - AttributeName: forecastDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: dfs
+
+  # ── purchase-orders ───────────────────────────────────────────────────────────
+  # PK=poId, GSI-Supplier-Status, GSI-SKU-DC
+  PurchaseOrdersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: purchase-orders
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: poId
+          AttributeType: S
+        - AttributeName: supplierId
+          AttributeType: S
+        - AttributeName: statusCreatedAt
+          AttributeType: S
+        - AttributeName: skuId
+          AttributeType: S
+        - AttributeName: dcCreatedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: poId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: GSI-Supplier-Status
+          KeySchema:
+            - AttributeName: supplierId
+              KeyType: HASH
+            - AttributeName: statusCreatedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI-SKU-DC
+          KeySchema:
+            - AttributeName: skuId
+              KeyType: HASH
+            - AttributeName: dcCreatedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: re
+
+  # ── supplier-pos ──────────────────────────────────────────────────────────────
+  # PK=supplierId, SK=poId, GSI-PO-Status
+  SupplierPosTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: supplier-pos
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: supplierId
+          AttributeType: S
+        - AttributeName: poId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: supplierId
+          KeyType: HASH
+        - AttributeName: poId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI-PO-Status
+          KeySchema:
+            - AttributeName: poId
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: sup
+
+  # ── elasticity-reference ──────────────────────────────────────────────────────
+  # PK=skuId, SK=category — read-only by PPS Lambda
+  ElasticityReferenceTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: elasticity-reference
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: skuId
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: skuId
+          KeyType: HASH
+        - AttributeName: category
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: pps
+
+Outputs:
+  SalesEventsTableName:
+    Value: !Ref SalesEventsTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SalesEventsTable
+  IdempotencyKeysTableName:
+    Value: !Ref IdempotencyKeysTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-IdempotencyKeysTable
+  InventoryPositionsTableName:
+    Value: !Ref InventoryPositionsTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-InventoryPositionsTable
+  ForecastsTableName:
+    Value: !Ref ForecastsTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ForecastsTable
+  PurchaseOrdersTableName:
+    Value: !Ref PurchaseOrdersTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PurchaseOrdersTable
+  SupplierPosTableName:
+    Value: !Ref SupplierPosTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupplierPosTable
+  ElasticityReferenceTableName:
+    Value: !Ref ElasticityReferenceTable
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ElasticityReferenceTable
+  PiiKeyArn:
+    Value: !GetAtt PiiEncryptionKey.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PiiKeyArn
+  PiiKeyAlias:
+    Value: !Ref PiiKeyAlias
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PiiKeyAlias

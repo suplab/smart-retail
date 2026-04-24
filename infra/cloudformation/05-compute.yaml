@@ -1,0 +1,1141 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail Compute Stack — ECS Fargate task definitions and services for
+  SIS, IMS, DFS, RE, SUP; Lambda functions for ARS and PPS; API Gateway HTTP
+  API with Cognito JWT authorizers; S3 raw-events bucket; IAM task roles with
+  least-privilege grants. Imports from Network, Data, Messaging, Auth stacks.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  SisImageUri:
+    Type: String
+    Description: ECR image URI for SIS (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/smartretail-sis-dev:latest)
+  ImsImageUri:
+    Type: String
+    Description: ECR image URI for IMS
+  DfsImageUri:
+    Type: String
+    Description: ECR image URI for DFS
+  ReImageUri:
+    Type: String
+    Description: ECR image URI for RE
+  SupImageUri:
+    Type: String
+    Description: ECR image URI for SUP
+  ArsLambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the ARS Lambda fat-JAR
+  ArsLambdaS3Key:
+    Type: String
+    Description: S3 key for the ARS Lambda fat-JAR
+  PpsLambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the PPS Lambda fat-JAR
+  PpsLambdaS3Key:
+    Type: String
+    Description: S3 key for the PPS Lambda fat-JAR
+  # Task CPU/memory — parameterised for environment-specific sizing
+  EcsTaskCpu:
+    Type: String
+    Default: "512"
+    AllowedValues: ["256", "512", "1024", "2048"]
+  EcsTaskMemory:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "4096"]
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+
+  # ── S3 Raw Events Bucket ──────────────────────────────────────────────────
+  RawEventsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      BucketName: !Sub smartretail-raw-events-${Environment}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIAAfter90Days
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── CloudWatch Log Groups ─────────────────────────────────────────────────
+  SisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/sis/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  ImsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/ims/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  DfsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/dfs/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  ReLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/re/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  SupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/sup/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  ArsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/ars/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  PpsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /smartretail/pps/${Environment}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  # ── IAM Task Execution Role (shared — pulls images, writes logs) ──────────
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-ecs-execution-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── SIS Task Role ──────────────────────────────────────────────────────────
+  SisTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-sis-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SisPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:ListShards
+                Resource: !Sub
+                  - arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${StreamName}
+                  - StreamName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-PosStreamName
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-SalesEventsTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-IdempotencyKeysTable
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub ${RawEventsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── IMS Task Role ──────────────────────────────────────────────────────────
+  ImsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-ims-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ImsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-ImsSalesEventsQueueArn
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-ImsForecastUpdatedQueueUrl
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-ImsShipmentQueueUrl
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-InventoryPositionsTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-InventoryPositionsTable
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── DFS Task Role ──────────────────────────────────────────────────────────
+  DfsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-dfs-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DfsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-DfsSalesEventsQueueUrl
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-DfsAdjustmentQueueUrl
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-ForecastsTable
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:CreateTransformJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:DescribeTransformJob
+                Resource: !Sub arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:*
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/smartretail/ml/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub ${RawEventsBucket.Arn}
+                  - !Sub ${RawEventsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── RE Task Role ───────────────────────────────────────────────────────────
+  ReTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-re-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-ReAlertQueueUrl
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-ReConfirmationQueueUrl
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-PurchaseOrdersTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-PurchaseOrdersTable
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:smartretail-replenishment-*
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── SUP Task Role ──────────────────────────────────────────────────────────
+  SupTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-sup-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SupPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-SupPoDispatchedQueueUrl
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-SupplierPosTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-SupplierPosTable
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !ImportValue
+                  Fn::Sub: SmartRetail-${Environment}-PiiKeyArn
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── ECS Task Definitions ───────────────────────────────────────────────────
+  SisTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub smartretail-sis-${Environment}
+      Cpu: !Ref EcsTaskCpu
+      Memory: !Ref EcsTaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt SisTaskRole.Arn
+      ContainerDefinitions:
+        - Name: sis
+          Image: !Ref SisImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: !Ref Environment
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SIS_KINESIS_STREAM_NAME
+              Value: smartretail-pos-stream
+            - Name: SIS_DYNAMODB_SALES_EVENTS_TABLE
+              Value: sales-events
+            - Name: SIS_DYNAMODB_IDEMPOTENCY_TABLE
+              Value: idempotency-keys
+            - Name: SIS_EVENTBRIDGE_BUS_NAME
+              Value: smartretail-events
+            - Name: SIS_S3_RAW_EVENTS_BUCKET
+              Value: !Ref RawEventsBucket
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref SisLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sis
+          # OTel Java agent injected via JAVA_TOOL_OPTIONS (ADR-007) — no per-service instrumentation code
+          Environment:
+            - Name: JAVA_TOOL_OPTIONS
+              Value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - Name: OTEL_SERVICE_NAME
+              Value: sis
+            - Name: OTEL_TRACES_EXPORTER
+              Value: xray
+            - Name: AWS_XRAY_DAEMON_ADDRESS
+              Value: "127.0.0.1:2000"
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  ImsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub smartretail-ims-${Environment}
+      Cpu: !Ref EcsTaskCpu
+      Memory: !Ref EcsTaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ImsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: ims
+          Image: !Ref ImsImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: JAVA_TOOL_OPTIONS
+              Value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - Name: OTEL_SERVICE_NAME
+              Value: ims
+            - Name: OTEL_TRACES_EXPORTER
+              Value: xray
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: !Ref Environment
+            - Name: IMS_SQS_SALES_QUEUE_URL
+              Value: !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-ImsSalesEventsQueueUrl
+            - Name: IMS_DYNAMODB_INVENTORY_TABLE
+              Value: inventory-positions
+            - Name: IMS_EVENTBRIDGE_BUS_NAME
+              Value: smartretail-events
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ImsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ims
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  DfsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub smartretail-dfs-${Environment}
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt DfsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: dfs
+          Image: !Ref DfsImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: JAVA_TOOL_OPTIONS
+              Value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - Name: OTEL_SERVICE_NAME
+              Value: dfs
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: !Ref Environment
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DfsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: dfs
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  ReTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub smartretail-re-${Environment}
+      Cpu: !Ref EcsTaskCpu
+      Memory: !Ref EcsTaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ReTaskRole.Arn
+      ContainerDefinitions:
+        - Name: re
+          Image: !Ref ReImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: JAVA_TOOL_OPTIONS
+              Value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - Name: OTEL_SERVICE_NAME
+              Value: re
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: !Ref Environment
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ReLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: re
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  SupTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub smartretail-sup-${Environment}
+      Cpu: !Ref EcsTaskCpu
+      Memory: !Ref EcsTaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt SupTaskRole.Arn
+      ContainerDefinitions:
+        - Name: sup
+          Image: !Ref SupImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: JAVA_TOOL_OPTIONS
+              Value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+            - Name: OTEL_SERVICE_NAME
+              Value: sup
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: !Ref Environment
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref SupLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sup
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  # ── ECS Fargate Services ───────────────────────────────────────────────────
+  # Min tasks: 1 in dev, 2 in prod (multi-AZ per CLAUDE.md §5.5)
+  SisFargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub smartretail-sis-${Environment}
+      Cluster: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EcsClusterArn
+      TaskDefinition: !Ref SisTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !If [IsProd, 2, 1]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+          Subnets:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ImsFargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub smartretail-ims-${Environment}
+      Cluster: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EcsClusterArn
+      TaskDefinition: !Ref ImsTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !If [IsProd, 2, 1]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+          Subnets:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  DfsFargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub smartretail-dfs-${Environment}
+      Cluster: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EcsClusterArn
+      TaskDefinition: !Ref DfsTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !If [IsProd, 2, 1]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+          Subnets:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+
+  ReFargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub smartretail-re-${Environment}
+      Cluster: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EcsClusterArn
+      TaskDefinition: !Ref ReTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !If [IsProd, 2, 1]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+          Subnets:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+
+  SupFargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub smartretail-sup-${Environment}
+      Cluster: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EcsClusterArn
+      TaskDefinition: !Ref SupTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !If [IsProd, 2, 1]
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+          Subnets:
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+            - !ImportValue
+                Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+
+  # ── Lambda Execution Roles ─────────────────────────────────────────────────
+  ArsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-ars-lambda-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ArsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-InventoryPositionsTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-InventoryPositionsTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-ForecastsTable
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-PurchaseOrdersTable
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  PpsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub smartretail-pps-lambda-${Environment}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: PpsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub
+                    - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+                    - TableName: !ImportValue
+                        Fn::Sub: SmartRetail-${Environment}-ElasticityReferenceTable
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub
+                  - arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${BusName}
+                  - BusName: !ImportValue
+                      Fn::Sub: SmartRetail-${Environment}-EventBusName
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── Lambda Functions ───────────────────────────────────────────────────────
+  ArsLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub smartretail-ars-${Environment}
+      Runtime: java17
+      Handler: com.smartretail.ars.ArsHandler::handleRequest
+      Code:
+        S3Bucket: !Ref ArsLambdaS3Bucket
+        S3Key: !Ref ArsLambdaS3Key
+      Role: !GetAtt ArsLambdaRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      TracingConfig:
+        Mode: Active
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+        SubnetIds:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      Environment:
+        Variables:
+          INVENTORY_TABLE_NAME: inventory-positions
+          FORECASTS_TABLE_NAME: forecasts
+          PURCHASE_ORDERS_TABLE_NAME: purchase-orders
+          AWS_REGION_NAME: !Ref AWS::Region
+      LoggingConfig:
+        LogGroup: !Ref ArsLogGroup
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  PpsLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub smartretail-pps-${Environment}
+      Runtime: java17
+      Handler: com.smartretail.pps.PpsHandler::handleRequest
+      Code:
+        S3Bucket: !Ref PpsLambdaS3Bucket
+        S3Key: !Ref PpsLambdaS3Key
+      Role: !GetAtt PpsLambdaRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      TracingConfig:
+        Mode: Active
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-EcsSecurityGroupId
+        SubnetIds:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-PrivateSubnet1
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-PrivateSubnet2
+      Environment:
+        Variables:
+          ELASTICITY_TABLE_NAME: elasticity-reference
+          EVENTBRIDGE_BUS_NAME: smartretail-events
+          AWS_REGION_NAME: !Ref AWS::Region
+      LoggingConfig:
+        LogGroup: !Ref PpsLogGroup
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # PPS triggered by PromotionActivated EventBridge rule (external source)
+  PpsEventBridgePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PpsLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/smartretail-events/PromotionActivated
+
+  PpsEventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: PromotionActivated
+      EventBusName: !ImportValue
+        Fn::Sub: SmartRetail-${Environment}-EventBusName
+      EventPattern:
+        detail-type: [PromotionActivated]
+      State: ENABLED
+      Targets:
+        - Id: PpsLambda
+          Arn: !GetAtt PpsLambdaFunction.Arn
+
+  # ── API Gateway HTTP API ────────────────────────────────────────────────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub smartretail-api-${Environment}
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
+        AllowHeaders: [Authorization, Content-Type]
+        MaxAge: 300
+      Tags:
+        Project: SmartRetail
+        Environment: !Ref Environment
+
+  # JWT Authorizer for Internal User Pool
+  InternalJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: InternalCognitoAuthorizer
+      IdentitySource: ["$request.header.Authorization"]
+      JwtConfiguration:
+        Audience:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-InternalUserPoolClientId
+        Issuer: !Sub
+          - https://cognito-idp.${AWS::Region}.amazonaws.com/${PoolId}
+          - PoolId: !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-InternalUserPoolId
+
+  # JWT Authorizer for Supplier User Pool
+  SupplierJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: SupplierCognitoAuthorizer
+      IdentitySource: ["$request.header.Authorization"]
+      JwtConfiguration:
+        Audience:
+          - !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-SupplierUserPoolClientId
+        Issuer: !Sub
+          - https://cognito-idp.${AWS::Region}.amazonaws.com/${PoolId}
+          - PoolId: !ImportValue
+              Fn::Sub: SmartRetail-${Environment}-SupplierUserPoolId
+
+  # ARS Lambda integration
+  ArsLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ArsLambdaFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  # GET /v1/dashboard/inventory — internal users only
+  ArsInventoryRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /v1/dashboard/inventory"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref InternalJwtAuthorizer
+      Target: !Sub integrations/${ArsLambdaIntegration}
+
+  # GET /v1/dashboard/forecasting
+  ArsForecastingRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /v1/dashboard/forecasting"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref InternalJwtAuthorizer
+      Target: !Sub integrations/${ArsLambdaIntegration}
+
+  # GET /v1/dashboard/replenishment
+  ArsReplenishmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /v1/dashboard/replenishment"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref InternalJwtAuthorizer
+      Target: !Sub integrations/${ArsLambdaIntegration}
+
+  # GET /v1/dashboard/supplier — supplier users
+  ArsSupplierRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "GET /v1/dashboard/supplier"
+      AuthorizationType: JWT
+      AuthorizerId: !Ref SupplierJwtAuthorizer
+      Target: !Sub integrations/${ArsLambdaIntegration}
+
+  ApiGatewayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  ArsApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ArsLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+Outputs:
+  ApiGatewayUrl:
+    Value: !GetAtt HttpApi.ApiEndpoint
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ApiGatewayUrl
+  RawEventsBucketName:
+    Value: !Ref RawEventsBucket
+    Export:
+      Name: !Sub SmartRetail-${Environment}-RawEventsBucketName
+  ArsLambdaArn:
+    Value: !GetAtt ArsLambdaFunction.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ArsLambdaArn
+  PpsLambdaArn:
+    Value: !GetAtt PpsLambdaFunction.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PpsLambdaArn
+  SisFargateServiceName:
+    Value: !GetAtt SisFargateService.Name
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SisFargateServiceName
+  ImsFargateServiceName:
+    Value: !GetAtt ImsFargateService.Name
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsFargateServiceName

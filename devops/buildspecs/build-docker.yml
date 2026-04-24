@@ -1,0 +1,53 @@
+version: 0.2
+# Builds Docker images for all 5 ECS services and pushes to ECR.
+# PrivilegedMode must be true in the CodeBuild project for docker daemon access.
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+
+  build:
+    commands:
+      - echo "Building SIS image..."
+      - SIS_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/smartretail-sis-$ENVIRONMENT
+      - docker build --target prod -f backend/sis/Dockerfile -t $SIS_REPO:$IMAGE_TAG -t $SIS_REPO:latest .
+
+      - echo "Building IMS image..."
+      - IMS_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/smartretail-ims-$ENVIRONMENT
+      - docker build --target prod -f backend/ims/Dockerfile -t $IMS_REPO:$IMAGE_TAG -t $IMS_REPO:latest .
+
+      - echo "Building DFS image..."
+      - DFS_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/smartretail-dfs-$ENVIRONMENT
+      - docker build --target prod -f backend/dfs/Dockerfile -t $DFS_REPO:$IMAGE_TAG -t $DFS_REPO:latest .
+
+      - echo "Building RE image..."
+      - RE_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/smartretail-re-$ENVIRONMENT
+      - docker build --target prod -f backend/re/Dockerfile -t $RE_REPO:$IMAGE_TAG -t $RE_REPO:latest .
+
+      - echo "Building SUP image..."
+      - SUP_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/smartretail-sup-$ENVIRONMENT
+      - docker build --target prod -f backend/sup/Dockerfile -t $SUP_REPO:$IMAGE_TAG -t $SUP_REPO:latest .
+
+  post_build:
+    commands:
+      - echo "Pushing images to ECR..."
+      - docker push $SIS_REPO:$IMAGE_TAG && docker push $SIS_REPO:latest
+      - docker push $IMS_REPO:$IMAGE_TAG && docker push $IMS_REPO:latest
+      - docker push $DFS_REPO:$IMAGE_TAG && docker push $DFS_REPO:latest
+      - docker push $RE_REPO:$IMAGE_TAG && docker push $RE_REPO:latest
+      - docker push $SUP_REPO:$IMAGE_TAG && docker push $SUP_REPO:latest
+
+      # Write imagedefinitions.json for ECS CodeDeploy blue-green deployments
+      - printf '[{"name":"sis","imageUri":"%s"}]' $SIS_REPO:$IMAGE_TAG > imagedefinitions-sis.json
+      - printf '[{"name":"ims","imageUri":"%s"}]' $IMS_REPO:$IMAGE_TAG > imagedefinitions-ims.json
+      - printf '[{"name":"dfs","imageUri":"%s"}]' $DFS_REPO:$IMAGE_TAG > imagedefinitions-dfs.json
+      - printf '[{"name":"re","imageUri":"%s"}]' $RE_REPO:$IMAGE_TAG > imagedefinitions-re.json
+      - printf '[{"name":"sup","imageUri":"%s"}]' $SUP_REPO:$IMAGE_TAG > imagedefinitions-sup.json
+
+artifacts:
+  files:
+    - imagedefinitions-*.json

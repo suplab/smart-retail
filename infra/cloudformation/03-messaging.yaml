@@ -1,0 +1,672 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmartRetail Messaging Stack — Kinesis Data Stream, EventBridge custom bus,
+  all SQS standard and FIFO queues with DLQs (maxReceiveCount=3), and
+  EventBridge rules routing events to subscriber queues per CLAUDE.md §3.4.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  KinesisPosShardCount:
+    Type: Number
+    Default: 1
+    Description: >
+      OQ-01 — Shard count confirmed by load test. Dev=1, scale for production
+      based on peak POS event volume.
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+
+  # ── Kinesis Data Stream — POS/e-commerce ingestion ───────────────────────
+  PosStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: smartretail-pos-stream
+      ShardCount: !Ref KinesisPosShardCount
+      RetentionPeriodHours: 24
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: OwnerService
+          Value: sis
+
+  # ── EventBridge Custom Bus ────────────────────────────────────────────────
+  SmartRetailEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: smartretail-events
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── DLQ helper macro (each queue gets its own DLQ) ───────────────────────
+  # Standard queues — DLQs first so they can be referenced by their parent
+
+  ImsSalesDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-sales-events-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  DfsSalesDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dfs-sales-events-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ArsSalesDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-sales-events-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ImsForecastDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-forecast-updated-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ArsForecastDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-forecast-updated-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ArsAlertDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-alert-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ArsOverstockDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-overstock-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  SupPoDispatchedDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: sup-po-dispatched-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ImsShipmentDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-shipment-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ArsShipmentDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-shipment-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  DfsAdjustmentDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dfs-adjustment-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # FIFO DLQs
+  ReAlertDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: re-alert-dlq.fifo
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  ReConfirmationDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: re-confirmation-dlq.fifo
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+
+  # ── Standard SQS Queues ───────────────────────────────────────────────────
+  ImsSalesEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-sales-events-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ImsSalesDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ims
+
+  DfsSalesEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dfs-sales-events-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DfsSalesDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: dfs
+
+  ArsSalesEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-sales-events-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ArsSalesDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ars
+
+  ImsForecastUpdatedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-forecast-updated-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ImsForecastDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ims
+
+  ArsForecastUpdatedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-forecast-updated-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ArsForecastDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ars
+
+  ArsAlertQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-alert-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ArsAlertDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ars
+
+  ArsOverstockQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-overstock-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ArsOverstockDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ars
+
+  SupPoDispatchedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: sup-po-dispatched-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SupPoDispatchedDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: sup
+
+  ImsShipmentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ims-shipment-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ImsShipmentDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ims
+
+  ArsShipmentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ars-shipment-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ArsShipmentDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: ars
+
+  DfsAdjustmentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dfs-adjustment-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DfsAdjustmentDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: dfs
+
+  # ── FIFO SQS Queues (RE service — ordering guarantees for saga) ───────────
+  ReAlertQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: re-alert-queue.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReAlertDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: re
+
+  ReConfirmationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: re-confirmation-queue.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReConfirmationDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: SmartRetail
+        - Key: OwnerService
+          Value: re
+
+  # ── SQS Queue Policies — allow EventBridge to send messages ──────────────
+  SalesQueuesPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ImsSalesEventsQueue
+        - !Ref DfsSalesEventsQueue
+        - !Ref ArsSalesEventsQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt ImsSalesEventsQueue.Arn
+              - !GetAtt DfsSalesEventsQueue.Arn
+              - !GetAtt ArsSalesEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/smartretail-events/*
+
+  ForecastQueuesPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ImsForecastUpdatedQueue
+        - !Ref ArsForecastUpdatedQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt ImsForecastUpdatedQueue.Arn
+              - !GetAtt ArsForecastUpdatedQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/smartretail-events/*
+
+  AlertQueuesPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ArsAlertQueue
+        - !Ref ArsOverstockQueue
+        - !Ref ReAlertQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt ArsAlertQueue.Arn
+              - !GetAtt ArsOverstockQueue.Arn
+              - !GetAtt ReAlertQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/smartretail-events/*
+
+  SupplierQueuesPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref SupPoDispatchedQueue
+        - !Ref ImsShipmentQueue
+        - !Ref ArsShipmentQueue
+        - !Ref ReConfirmationQueue
+        - !Ref DfsAdjustmentQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt SupPoDispatchedQueue.Arn
+              - !GetAtt ImsShipmentQueue.Arn
+              - !GetAtt ArsShipmentQueue.Arn
+              - !GetAtt ReConfirmationQueue.Arn
+              - !GetAtt DfsAdjustmentQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/smartretail-events/*
+
+  # ── EventBridge Rules — CLAUDE.md §3.4 topology ──────────────────────────
+
+  # SalesTransactionRecorded → ims, dfs, ars
+  RuleSalesTransactionRecorded:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SalesTransactionRecorded
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [SalesTransactionRecorded]
+        source: [sis]
+      State: ENABLED
+      Targets:
+        - Id: ImsSalesQueue
+          Arn: !GetAtt ImsSalesEventsQueue.Arn
+        - Id: DfsSalesQueue
+          Arn: !GetAtt DfsSalesEventsQueue.Arn
+        - Id: ArsSalesQueue
+          Arn: !GetAtt ArsSalesEventsQueue.Arn
+
+  # ForecastUpdated → ims, ars
+  RuleForecastUpdated:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ForecastUpdated
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [ForecastUpdated]
+        source: [dfs]
+      State: ENABLED
+      Targets:
+        - Id: ImsForecastQueue
+          Arn: !GetAtt ImsForecastUpdatedQueue.Arn
+        - Id: ArsForecastQueue
+          Arn: !GetAtt ArsForecastUpdatedQueue.Arn
+
+  # LowStockAlertRaised → re (FIFO), ars (Standard)
+  RuleLowStockAlertRaised:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: LowStockAlertRaised
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [LowStockAlertRaised]
+        source: [ims]
+      State: ENABLED
+      Targets:
+        - Id: ReAlertFifoQueue
+          Arn: !GetAtt ReAlertQueue.Arn
+          SqsParameters:
+            MessageGroupId: low-stock-alerts
+        - Id: ArsAlertQueue
+          Arn: !GetAtt ArsAlertQueue.Arn
+
+  # OverstockAlert → ars
+  RuleOverstockAlert:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: OverstockAlert
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [OverstockAlert]
+        source: [ims]
+      State: ENABLED
+      Targets:
+        - Id: ArsOverstockQueue
+          Arn: !GetAtt ArsOverstockQueue.Arn
+
+  # PODispatched → sup
+  RulePoDispatched:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: PODispatched
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [PODispatched]
+        source: [re]
+      State: ENABLED
+      Targets:
+        - Id: SupPoDispatchedQueue
+          Arn: !GetAtt SupPoDispatchedQueue.Arn
+
+  # ShipmentUpdated → ims, ars
+  RuleShipmentUpdated:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ShipmentUpdated
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [ShipmentUpdated]
+        source: [sup]
+      State: ENABLED
+      Targets:
+        - Id: ImsShipmentQueue
+          Arn: !GetAtt ImsShipmentQueue.Arn
+        - Id: ArsShipmentQueue
+          Arn: !GetAtt ArsShipmentQueue.Arn
+
+  # OrderConfirmed → re (FIFO)
+  RuleOrderConfirmed:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: OrderConfirmed
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [OrderConfirmed]
+        source: [sup]
+      State: ENABLED
+      Targets:
+        - Id: ReConfirmationFifoQueue
+          Arn: !GetAtt ReConfirmationQueue.Arn
+          SqsParameters:
+            MessageGroupId: order-confirmations
+
+  # ForecastAdjustmentPublished → dfs
+  RuleForecastAdjustmentPublished:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ForecastAdjustmentPublished
+      EventBusName: !Ref SmartRetailEventBus
+      EventPattern:
+        detail-type: [ForecastAdjustmentPublished]
+        source: [pps]
+      State: ENABLED
+      Targets:
+        - Id: DfsAdjustmentQueue
+          Arn: !GetAtt DfsAdjustmentQueue.Arn
+
+Outputs:
+  PosStreamName:
+    Value: !Ref PosStream
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PosStreamName
+  PosStreamArn:
+    Value: !GetAtt PosStream.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-PosStreamArn
+  EventBusName:
+    Value: !Ref SmartRetailEventBus
+    Export:
+      Name: !Sub SmartRetail-${Environment}-EventBusName
+  EventBusArn:
+    Value: !GetAtt SmartRetailEventBus.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-EventBusArn
+  ImsSalesEventsQueueUrl:
+    Value: !Ref ImsSalesEventsQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsSalesEventsQueueUrl
+  ImsSalesEventsQueueArn:
+    Value: !GetAtt ImsSalesEventsQueue.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsSalesEventsQueueArn
+  DfsSalesEventsQueueUrl:
+    Value: !Ref DfsSalesEventsQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-DfsSalesEventsQueueUrl
+  ImsForecastUpdatedQueueUrl:
+    Value: !Ref ImsForecastUpdatedQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsForecastUpdatedQueueUrl
+  ReAlertQueueUrl:
+    Value: !Ref ReAlertQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ReAlertQueueUrl
+  ReConfirmationQueueUrl:
+    Value: !Ref ReConfirmationQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ReConfirmationQueueUrl
+  SupPoDispatchedQueueUrl:
+    Value: !Ref SupPoDispatchedQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupPoDispatchedQueueUrl
+  ImsShipmentQueueUrl:
+    Value: !Ref ImsShipmentQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsShipmentQueueUrl
+  DfsAdjustmentQueueUrl:
+    Value: !Ref DfsAdjustmentQueue
+    Export:
+      Name: !Sub SmartRetail-${Environment}-DfsAdjustmentQueueUrl
+  # DLQ ARNs exported for ObservabilityStack to attach CloudWatch alarms
+  ImsSalesDlqArn:
+    Value: !GetAtt ImsSalesDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsSalesDlqArn
+  DfsSalesDlqArn:
+    Value: !GetAtt DfsSalesDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-DfsSalesDlqArn
+  ArsSalesDlqArn:
+    Value: !GetAtt ArsSalesDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ArsSalesDlqArn
+  ImsForecastDlqArn:
+    Value: !GetAtt ImsForecastDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsForecastDlqArn
+  ReAlertDlqArn:
+    Value: !GetAtt ReAlertDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ReAlertDlqArn
+  ReConfirmationDlqArn:
+    Value: !GetAtt ReConfirmationDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ReConfirmationDlqArn
+  SupPoDispatchedDlqArn:
+    Value: !GetAtt SupPoDispatchedDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-SupPoDispatchedDlqArn
+  ImsShipmentDlqArn:
+    Value: !GetAtt ImsShipmentDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-ImsShipmentDlqArn
+  DfsAdjustmentDlqArn:
+    Value: !GetAtt DfsAdjustmentDlq.Arn
+    Export:
+      Name: !Sub SmartRetail-${Environment}-DfsAdjustmentDlqArn

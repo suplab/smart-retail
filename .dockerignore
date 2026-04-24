@@ -1,0 +1,40 @@
+# Root .dockerignore — applies when building from repo root context
+# Each service Dockerfile uses COPY backend/{svc}/src so these exclusions matter
+
+# Build outputs
+**/target/
+frontend/dist/
+frontend/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# CDK
+infra/cdk/node_modules/
+infra/cdk/cdk.out/
+
+# Test artifacts
+**/*.class
+**/surefire-reports/
+**/failsafe-reports/
+**/*.jacoco
+
+# Secrets — never include in Docker context
+**/.env
+**/.env.local
+**/secrets.yml
+
+# Documentation
+docs/
+*.md
+!backend/*/README.md
+
+# CI
+devops/
+scripts/
