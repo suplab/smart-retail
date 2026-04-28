@@ -1,4 +1,3 @@
-import React from 'react'
 import { Truck } from 'lucide-react'
 import { LogisticsCard } from '@/features/logistics/LogisticsCard'
 import { Select }         from '@/components/ui/Select'

@@ -1,4 +1,3 @@
-import React from 'react'
 
 /**
  * Replenishment View — Sprint 2 Week 2+ deliverable.

@@ -1,4 +1,3 @@
-import React from 'react'
 
 /**
  * Supplier Portal View — Sprint 2 Week 2+ deliverable.

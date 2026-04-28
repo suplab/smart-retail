@@ -1,4 +1,3 @@
-import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Package, RefreshCw, Truck } from 'lucide-react'
 import { Card, CardHeader } from '@/components/ui/Card'

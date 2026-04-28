@@ -1,4 +1,3 @@
-import React from 'react'
 import { RefreshCcw, Calendar, Building2, Activity } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ForecastCard }   from '@/features/forecast/ForecastCard'

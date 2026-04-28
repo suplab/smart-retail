@@ -1,4 +1,3 @@
-import React from 'react'
 import { Bell, Sun, Moon, Menu, ChevronRight, User } from 'lucide-react'
 import { useSidebarStore } from '@/store/sidebarStore'
 import { useDashboardStore } from '@/store/dashboardStore'
