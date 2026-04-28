@@ -9,6 +9,14 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  // Exclude the Amplify packages from Vite's esbuild pre-bundler.
+  // aws-amplify and @aws-amplify/ui-react are massive CJS→ESM bundles;
+  // Vite detects them via dynamic-import scanning and hangs trying to
+  // optimise them, which blocks every subsequent module request.
+  // Safe to exclude because both imports are conditional/lazy at runtime.
+  optimizeDeps: {
+    exclude: ['aws-amplify', '@aws-amplify/ui-react'],
+  },
   server: {
     port: 3000,
     host: true,
