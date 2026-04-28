@@ -1,8 +1,8 @@
-import React from 'react'
+import { type ReactNode } from 'react'
 import { clsx } from 'clsx'
 
 interface CardProps {
-  children:   React.ReactNode
+  children:   ReactNode
   className?: string
   noPadding?: boolean
 }
@@ -22,8 +22,8 @@ export function Card({ children, className, noPadding }: CardProps) {
 interface CardHeaderProps {
   title:       string
   subtitle?:   string
-  action?:     React.ReactNode
-  badge?:      React.ReactNode
+  action?:     ReactNode
+  badge?:      ReactNode
   className?:  string
 }
 

@@ -18,9 +18,9 @@ export function Skeleton({ className, rounded = 'md' }: SkeletonProps) {
   )
 }
 
-export function CardSkeleton() {
+export function CardSkeleton({ className }: { className?: string }) {
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+    <div className={clsx('bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 space-y-4', className)}>
       <div className="flex items-center justify-between">
         <Skeleton className="h-5 w-36" />
         <Skeleton className="h-6 w-28" rounded="full" />
@@ -35,9 +35,9 @@ export function CardSkeleton() {
   )
 }
 
-export function TableSkeleton({ rows = 6 }: { rows?: number }) {
+export function TableSkeleton({ rows = 6, className }: { rows?: number; className?: string }) {
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 space-y-3">
+    <div className={clsx('bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 space-y-3', className)}>
       <Skeleton className="h-5 w-40 mb-5" />
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="flex gap-4">
