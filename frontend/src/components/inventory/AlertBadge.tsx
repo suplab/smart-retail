@@ -1,4 +1,3 @@
-import React from 'react'
 import type { AlertStatus } from '@/types/inventory'
 import { clsx } from 'clsx'
 

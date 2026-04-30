@@ -1,4 +1,3 @@
-import React from 'react'
 import { TrendingUp, Info } from 'lucide-react'
 import { ForecastCard } from '@/features/forecast/ForecastCard'
 import { Select }        from '@/components/ui/Select'

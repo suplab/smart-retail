@@ -1,4 +1,3 @@
-import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ComposedChart, Line, Area, XAxis, YAxis,
@@ -19,30 +18,19 @@ const riskVariant: Record<StockoutRisk, BadgeVariant> = {
   High:     'danger',
 }
 
-interface TooltipEntry {
-  dataKey: string
-  name:    string
-  value:   number
-  color:   string
-}
-interface TooltipPayload {
-  active?:  boolean
-  payload?: TooltipEntry[]
-  label?:   string
-}
+interface TooltipEntry { dataKey: string; name: string; value: number; color: string }
+interface TooltipPayload { active?: boolean; payload?: TooltipEntry[]; label?: string }
 
 function ChartTooltip({ active, payload, label }: TooltipPayload) {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-lg px-3 py-2.5">
-      <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-2">{label}</p>
+    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-lg px-3 py-2">
+      <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">{label}</p>
       {payload.map(entry => (
         <div key={entry.dataKey} className="flex items-center gap-2 text-xs py-0.5">
           <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
           <span className="text-slate-500 dark:text-slate-400">{entry.name}:</span>
-          <span className="font-semibold text-slate-800 dark:text-slate-100">
-            {entry.value.toLocaleString()} units
-          </span>
+          <span className="font-semibold text-slate-800 dark:text-slate-100">{entry.value.toLocaleString()} units</span>
         </div>
       ))}
     </div>
@@ -53,42 +41,34 @@ export function ForecastCard() {
   const { selectedDC, dateRange } = useDashboardStore()
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey:       ['forecast', selectedDC, dateRange],
-    queryFn:        () => fetchForecast(selectedDC, dateRange),
+    queryKey:        ['forecast', selectedDC, dateRange],
+    queryFn:         () => fetchForecast(selectedDC, dateRange),
     refetchInterval: 30_000,
   })
 
-  if (isLoading) return <CardSkeleton />
+  if (isLoading) return <CardSkeleton className="h-full" />
 
   if (isError) {
     return (
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 flex flex-col items-center justify-center gap-3 min-h-[280px]">
+      <div className="h-full bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 flex flex-col items-center justify-center gap-3">
         <TrendingUp size={32} className="text-slate-300" />
         <p className="text-sm text-slate-500">Failed to load forecast data.</p>
-        <button onClick={() => refetch()} className="text-xs text-indigo-600 hover:underline font-medium">
-          Retry
-        </button>
+        <button onClick={() => void refetch()} className="text-xs text-indigo-600 hover:underline font-medium">Retry</button>
       </div>
     )
   }
 
   const { data: chartData, unitsSold, accuracy, stockoutRisk, predictedDemand } = data!
 
-  const visibleData = chartData.map(d => ({
-    ...d,
-    actual: d.actual === 0 ? null : d.actual,
-  }))
+  const visibleData = chartData.map(d => ({ ...d, actual: d.actual === 0 ? null : d.actual }))
 
   return (
-    <Card>
+    <Card className="h-full flex flex-col p-5">
       <CardHeader
+        className="mb-3 shrink-0"
         title="Sales Forecast"
         subtitle="Actual vs predicted demand — rolling 12 months"
-        badge={
-          <Badge variant="success" dot>
-            Predicted Demand: {predictedDemand.toLocaleString()} units
-          </Badge>
-        }
+        badge={<Badge variant="success" dot>Predicted: {predictedDemand.toLocaleString()} units</Badge>}
         action={
           <button
             onClick={() => void refetch()}
@@ -100,9 +80,10 @@ export function ForecastCard() {
         }
       />
 
-      <div className="h-56">
+      {/* Chart fills all available vertical space */}
+      <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={visibleData} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
+          <ComposedChart data={visibleData} margin={{ top: 2, right: 4, left: -24, bottom: 0 }}>
             <defs>
               <linearGradient id="fcGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%"  stopColor="#10b981" stopOpacity={0.22} />
@@ -110,66 +91,42 @@ export function ForecastCard() {
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-            <XAxis
-              dataKey="month"
-              tick={{ fontSize: 10, fill: '#94a3b8' }}
-              axisLine={false}
-              tickLine={false}
-            />
+            <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
             <YAxis
-              tick={{ fontSize: 10, fill: '#94a3b8' }}
-              axisLine={false}
-              tickLine={false}
+              tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false}
               tickFormatter={v => `${(v / 1000).toFixed(v >= 1000 ? 1 : 0)}k`}
             />
             <Tooltip content={<ChartTooltip />} />
-            <Legend
-              wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }}
-              iconType="circle"
-              iconSize={8}
-            />
+            <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '6px' }} iconType="circle" iconSize={8} />
             <Area
-              type="monotone"
-              dataKey="forecast"
-              name="Forecast"
-              fill="url(#fcGrad)"
-              stroke="#10b981"
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4, fill: '#10b981', strokeWidth: 0 }}
-              connectNulls
+              type="monotone" dataKey="forecast" name="Forecast"
+              fill="url(#fcGrad)" stroke="#10b981" strokeWidth={2}
+              dot={false} activeDot={{ r: 4, fill: '#10b981', strokeWidth: 0 }} connectNulls
             />
             <Line
-              type="monotone"
-              dataKey="actual"
-              name="Actual"
-              stroke="#6366f1"
-              strokeWidth={2.5}
-              dot={false}
-              activeDot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }}
-              connectNulls={false}
+              type="monotone" dataKey="actual" name="Actual"
+              stroke="#6366f1" strokeWidth={2.5}
+              dot={false} activeDot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }} connectNulls={false}
             />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Footer metrics */}
-      <div className="grid grid-cols-3 gap-4 mt-5 pt-5 border-t border-slate-100 dark:border-slate-700">
+      {/* Compact single-row footer metrics */}
+      <div className="shrink-0 flex items-center justify-between mt-3 pt-3 border-t border-slate-100 dark:border-slate-700">
         <div className="text-center">
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1 font-medium uppercase tracking-wide">Units Sold</p>
-          <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">
-            {unitsSold.toLocaleString()}
-          </p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide">Units Sold</p>
+          <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-tight">{unitsSold.toLocaleString()}</p>
         </div>
-        <div className="text-center border-x border-slate-100 dark:border-slate-700">
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1 font-medium uppercase tracking-wide">Accuracy</p>
-          <p className="text-2xl font-bold text-emerald-600">{accuracy}%</p>
-        </div>
+        <div className="w-px h-8 bg-slate-100 dark:bg-slate-700" />
         <div className="text-center">
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1 font-medium uppercase tracking-wide">Stockout Risk</p>
-          <div className="flex justify-center mt-0.5">
-            <Badge variant={riskVariant[stockoutRisk]} dot>{stockoutRisk}</Badge>
-          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide">Accuracy</p>
+          <p className="text-lg font-bold text-emerald-600 leading-tight">{accuracy}%</p>
+        </div>
+        <div className="w-px h-8 bg-slate-100 dark:bg-slate-700" />
+        <div className="text-center">
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide">Stockout Risk</p>
+          <div className="mt-0.5"><Badge variant={riskVariant[stockoutRisk]} dot>{stockoutRisk}</Badge></div>
         </div>
       </div>
     </Card>

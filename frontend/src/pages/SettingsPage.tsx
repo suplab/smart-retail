@@ -1,12 +1,11 @@
-import React from 'react'
-import { Settings, Moon, Sun, Bell, RefreshCw, Shield, Info } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { type ReactNode, useState } from 'react'
+import { Settings, Moon, Sun, RefreshCw, Info } from 'lucide-react'
 import { useDashboardStore } from '@/store/dashboardStore'
 
 interface SettingsRowProps {
   label:    string
   sub?:     string
-  children: React.ReactNode
+  children: ReactNode
 }
 function SettingsRow({ label, sub, children }: SettingsRowProps) {
   return (
@@ -38,8 +37,8 @@ function Toggle({ checked, onChange }: ToggleProps) {
 
 export function SettingsPage() {
   const { isDarkMode, toggleDarkMode } = useDashboardStore()
-  const [notifications, setNotifications] = React.useState(true)
-  const [autoRefresh,   setAutoRefresh]   = React.useState(true)
+  const [notifications, setNotifications] = useState(true)
+  const [autoRefresh,   setAutoRefresh]   = useState(true)
 
   return (
     <div className="min-h-full">

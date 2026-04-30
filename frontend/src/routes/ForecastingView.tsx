@@ -1,4 +1,3 @@
-import React from 'react'
 
 /**
  * Forecasting View — Sprint 2 Week 2+ deliverable.

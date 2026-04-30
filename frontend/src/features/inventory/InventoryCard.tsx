@@ -1,42 +1,35 @@
-import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Package, RefreshCw, Truck } from 'lucide-react'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { Select } from '@/components/ui/Select'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { useDashboardStore } from '@/store/dashboardStore'
 import { fetchInventory } from '@/services/api'
 import { DISTRIBUTION_CENTERS } from '@/types/dashboard'
 
-function formatINR(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
-    style:                 'currency',
-    currency:              'INR',
-    maximumFractionDigits: 0,
-  }).format(value)
+function formatUSD(value: number): string {
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`
+  if (value >= 1_000)     return `$${(value / 1_000).toFixed(0)}K`
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value)
 }
 
 export function InventoryCard() {
-  const { selectedDC, setSelectedDC } = useDashboardStore()
+  const { selectedDC } = useDashboardStore()
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey:       ['inventory', selectedDC],
-    queryFn:        () => fetchInventory(selectedDC),
+    queryKey:        ['inventory', selectedDC],
+    queryFn:         () => fetchInventory(selectedDC),
     refetchInterval: 15_000,
   })
 
-  if (isLoading) return <CardSkeleton />
+  if (isLoading) return <CardSkeleton className="h-full" />
 
   if (isError) {
     return (
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 p-6 flex flex-col items-center justify-center gap-3 min-h-[280px]">
+      <div className="h-full bg-white dark:bg-slate-800 rounded-2xl shadow-card border border-slate-100 dark:border-slate-700 flex flex-col items-center justify-center gap-3">
         <Package size={32} className="text-slate-300" />
         <p className="text-sm text-slate-500">Failed to load inventory.</p>
-        <button onClick={() => void refetch()} className="text-xs text-indigo-600 hover:underline font-medium">
-          Retry
-        </button>
+        <button onClick={() => void refetch()} className="text-xs text-indigo-600 hover:underline font-medium">Retry</button>
       </div>
     )
   }
@@ -45,8 +38,9 @@ export function InventoryCard() {
   const dcLabel = DISTRIBUTION_CENTERS.find(d => d.value === selectedDC)?.label ?? 'DC'
 
   return (
-    <Card>
+    <Card className="h-full flex flex-col p-5">
       <CardHeader
+        className="mb-3 shrink-0"
         title="Inventory Overview"
         action={
           <button
@@ -58,56 +52,40 @@ export function InventoryCard() {
         }
       />
 
-      {/* DC Selector */}
-      <Select
-        value={selectedDC}
-        onChange={setSelectedDC}
-        options={DISTRIBUTION_CENTERS.map(d => ({ value: d.value, label: d.label }))}
-        className="w-full mb-5"
-      />
-
-      {/* Stock value */}
-      <div className="mb-4">
+      {/* Stock value — compact */}
+      <div className="shrink-0 mb-3">
         <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mb-0.5">
-          Current Stock Value
+          Stock Value · {dcLabel}
         </p>
-        <p className="text-3xl font-bold text-slate-900 dark:text-slate-50 tracking-tight">
-          {formatINR(stockValue)}
+        <p className="text-2xl font-bold text-slate-900 dark:text-slate-50 tracking-tight leading-tight">
+          {formatUSD(stockValue)}
         </p>
-        <p className="text-xs text-slate-400 mt-0.5 truncate">{dcLabel}</p>
       </div>
 
-      {/* Status blocks */}
-      <div className="space-y-2.5 mb-4">
-        {/* On Hand */}
-        <div className="stat-block-green flex items-center justify-between">
+      {/* Stat blocks — compact */}
+      <div className="shrink-0 space-y-2 mb-3">
+        <div className="stat-block-green flex items-center justify-between py-2.5">
           <div>
-            <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">On Hand</p>
-            <p className="text-2xl font-bold text-emerald-800 leading-tight">
-              {onHand.toLocaleString()}
-            </p>
+            <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">On Hand</p>
+            <p className="text-xl font-bold text-emerald-800 leading-tight">{onHand.toLocaleString()}</p>
             <p className="text-[10px] text-emerald-600">units available</p>
           </div>
-          <Package size={26} className="text-emerald-300" />
+          <Package size={22} className="text-emerald-300" />
         </div>
 
-        {/* In Transit */}
-        <div className="stat-block-yellow flex items-center justify-between">
+        <div className="stat-block-yellow flex items-center justify-between py-2.5">
           <div>
-            <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">In Transit</p>
-            <p className="text-2xl font-bold text-amber-800 leading-tight">
-              {inTransit.toLocaleString()}
-            </p>
+            <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wide">In Transit</p>
+            <p className="text-xl font-bold text-amber-800 leading-tight">{inTransit.toLocaleString()}</p>
             <p className="text-[10px] text-amber-600">units en route</p>
           </div>
-          <Truck size={26} className="text-amber-300" />
+          <Truck size={22} className="text-amber-300" />
         </div>
 
-        {/* Reorder */}
-        <div className={reorderRequired ? 'stat-block-red' : 'stat-block-green'}>
+        <div className={reorderRequired ? 'stat-block-red py-2.5' : 'stat-block-green py-2.5'}>
           <div className="flex items-center justify-between">
             <div>
-              <p className={`text-xs font-semibold uppercase tracking-wide ${reorderRequired ? 'text-red-700' : 'text-emerald-700'}`}>
+              <p className={`text-[10px] font-semibold uppercase tracking-wide ${reorderRequired ? 'text-red-700' : 'text-emerald-700'}`}>
                 Reorder Required
               </p>
               <p className={`text-xl font-bold leading-tight ${reorderRequired ? 'text-red-800' : 'text-emerald-800'}`}>
@@ -121,29 +99,16 @@ export function InventoryCard() {
         </div>
       </div>
 
-      {/* Low stock alerts */}
-      <div className="flex items-center justify-between py-2.5 px-4 bg-slate-50 dark:bg-slate-700/40 rounded-xl mb-4">
+      {/* Low-stock alerts — pushed to bottom with mt-auto */}
+      <div className="mt-auto shrink-0 flex items-center justify-between py-2.5 px-3 bg-slate-50 dark:bg-slate-700/40 rounded-xl border border-slate-100 dark:border-slate-600/40">
         <div className="flex items-center gap-2">
-          <AlertTriangle
-            size={15}
-            className={lowStockAlerts > 0 ? 'text-amber-500' : 'text-slate-400'}
-          />
-          <span className="text-sm text-slate-600 dark:text-slate-300 font-medium">
-            Low Stock Alerts
-          </span>
+          <AlertTriangle size={14} className={lowStockAlerts > 0 ? 'text-amber-500' : 'text-slate-400'} />
+          <span className="text-sm text-slate-600 dark:text-slate-300 font-medium">Low Stock Alerts</span>
         </div>
-        <Badge
-          variant={lowStockAlerts > 5 ? 'danger' : lowStockAlerts > 0 ? 'warning' : 'success'}
-          dot
-        >
+        <Badge variant={lowStockAlerts > 5 ? 'danger' : lowStockAlerts > 0 ? 'warning' : 'success'} dot>
           {lowStockAlerts} SKUs
         </Badge>
       </div>
-
-      {/* CTA */}
-      <Button variant="primary" fullWidth size="md" icon={<Package size={15} />}>
-        Replenish Stock
-      </Button>
     </Card>
   )
 }
